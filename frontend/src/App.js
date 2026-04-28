@@ -132,6 +132,7 @@ export default function App() {
   const [signerTitle,  setSignerTitle]  = useState(() => localStorage.getItem("es_title") || "");
   const [showIdentity, setShowIdentity] = useState(false);
   const [signature,    setSignature]    = useState(() => localStorage.getItem("es_sig") || null);
+  const [signaturePosition, setSignaturePosition] = useState(() => localStorage.getItem("es_sig_pos") || "right");
   const [showSigPad,   setShowSigPad]   = useState(false);
 
   // ── Data ───────────────────────────────────────────────
@@ -280,9 +281,11 @@ export default function App() {
     setShowIdentity(false);
   }
 
-  function saveSignature(base64) {
+  function saveSignature(base64, pos) {
     setSignature(base64);
+    setSignaturePosition(pos);
     localStorage.setItem("es_sig", base64);
+    localStorage.setItem("es_sig_pos", pos);
     addToast("Signature saved for this session.");
   }
 
@@ -343,7 +346,7 @@ export default function App() {
             <FileList files={files} selectedId={selectedFile?.id} onSelect={selectFile} loading={filesLoading} folderName={selectedFolder?.name} />
           </div>
           <div className={`panel-col col-preview${showPreview ? " mob-show" : " mob-hide"}`}>
-            <PreviewPanel file={selectedFile} signature={signature} signerName={signerName} signerTitle={signerTitle}
+            <PreviewPanel file={selectedFile} signature={signature} signaturePosition={signaturePosition} signerName={signerName} signerTitle={signerTitle}
               onOpenSigPad={() => setShowSigPad(true)} onSigned={onSigned} onError={(msg) => addToast(msg, "error")}
               previewKey={previewKey} onClose={() => { setSelectedFile(null); setMobileTab("files"); }} />
           </div>
@@ -353,7 +356,7 @@ export default function App() {
       </div>
 
       {showIdentity && <IdentityModal defaultName={signerName} defaultTitle={signerTitle} onSave={saveIdentity} />}
-      {showSigPad && <SignaturePad onSave={saveSignature} onClose={() => setShowSigPad(false)} />}
+      {showSigPad && <SignaturePad initialPosition={signaturePosition} onSave={saveSignature} onClose={() => setShowSigPad(false)} />}
       {showAdmin && <AdminPanel onClose={() => setShowAdmin(false)} onFoldersChanged={loadFolders} />}
       <ToastStack toasts={toasts} />
     </>

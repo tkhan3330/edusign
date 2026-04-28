@@ -480,7 +480,7 @@ app.post("/api/files/:fileId/sign", async (req, res) => {
   try {
     const drive = getDrive();
     const { fileId } = req.params;
-    const { signatureBase64, signerName, signerTitle = "Academic Head" } = req.body;
+    const { signatureBase64, signaturePosition = "right", signerName, signerTitle = "Academic Head" } = req.body;
 
     const { data: fileMeta } = await drive.files.get({ fileId, fields: "mimeType, name, parents" });
     const isPdf = fileMeta.mimeType === "application/pdf";
@@ -515,7 +515,14 @@ app.post("/api/files/:fileId/sign", async (req, res) => {
 
     pages.forEach((page) => {
       const { width } = page.getSize();
-      const stampX = width - STAMP_W - MARGIN;
+      let stampX;
+      if (signaturePosition === "left") {
+        stampX = MARGIN;
+      } else if (signaturePosition === "center") {
+        stampX = (width - STAMP_W) / 2;
+      } else {
+        stampX = width - STAMP_W - MARGIN;
+      }
       const stampY = MARGIN;
       page.drawRectangle({ x: stampX, y: stampY, width: STAMP_W, height: STAMP_H, color: rgb(1, 1, 1), borderColor: navy, borderWidth: 1 });
       page.drawRectangle({ x: stampX, y: stampY + STAMP_H - 14, width: STAMP_W, height: 14, color: gold });

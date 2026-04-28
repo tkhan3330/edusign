@@ -1,8 +1,9 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { X, Trash2, Upload, PenLine } from "lucide-react";
 
-export function SignaturePad({ onSave, onClose }) {
+export function SignaturePad({ initialPosition = "right", onSave, onClose }) {
   const canvasRef  = useRef(null);
+  const [position, setPosition]   = useState(initialPosition);
   const [mode,     setMode]       = useState("draw");
   const [drawing,  setDrawing]    = useState(false);
   const [hasStrokes, setHasStrokes] = useState(false);
@@ -78,10 +79,10 @@ export function SignaturePad({ onSave, onClose }) {
   function handleSave() {
     if (mode === "draw") {
       if (!hasStrokes) return;
-      onSave(canvasRef.current.toDataURL("image/png"));
+      onSave(canvasRef.current.toDataURL("image/png"), position);
     } else {
       if (!uploadImg) return;
-      onSave(uploadImg);
+      onSave(uploadImg, position);
     }
     onClose();
   }
@@ -184,6 +185,26 @@ export function SignaturePad({ onSave, onClose }) {
             />
           </div>
         )}
+
+        {/* Position */}
+        <div style={{ padding: "0 20px 16px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: "13px", fontWeight: "500", color: "#64748b" }}>Stamp Position:</span>
+          <div style={{ display: "flex", gap: "12px" }}>
+            {["left", "center", "right"].map(pos => (
+              <label key={pos} style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "13px", cursor: "pointer", textTransform: "capitalize", color: "#334155" }}>
+                <input
+                  type="radio"
+                  name="sigPosition"
+                  value={pos}
+                  checked={position === pos}
+                  onChange={(e) => setPosition(e.target.value)}
+                  style={{ accentColor: "#0f172a", width: "14px", height: "14px", cursor: "pointer" }}
+                />
+                {pos}
+              </label>
+            ))}
+          </div>
+        </div>
 
         {/* Actions */}
         <div className="modal-actions">

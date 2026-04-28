@@ -42,6 +42,7 @@ function getFileTypeName(mimeType) {
 export const PreviewPanel = ({
   file,
   signature = null,
+  signaturePosition = 'right',
   signerName = '',
   signerTitle = 'Academic Head',
   onOpenSigPad = () => {},
@@ -112,6 +113,7 @@ export const PreviewPanel = ({
         headers,
         body: JSON.stringify({
           signatureBase64: signature,
+          signaturePosition,
           signerName: signerName.trim(),
           signerTitle: signerTitle,
         }),
