@@ -1,0 +1,13 @@
+node_modules/
+.env
+credentials/*.json
+credentials/service-account.json
+config.json
+*.log
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+package-lock.json
+node_modules/
+.env
+package-lock.json
