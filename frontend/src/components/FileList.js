@@ -71,7 +71,6 @@ export function FileList({ files, selectedId, onSelect, loading, folderName }) {
               className={`file-card${selectedId === file.id ? " active" : ""}${file.isSigned ? " is-signed" : ""}`}
               onClick={() => onSelect(file)}
               role="listitem"
-              aria-pressed={selectedId === file.id}
             >
               <div className="file-card-icon">
                 {file.isSigned

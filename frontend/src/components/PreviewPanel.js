@@ -73,7 +73,7 @@ export const PreviewPanel = ({
       setStepIdx(0);
     }
     return () => clearInterval(interval);
-  }, [signing]);
+  }, [signing, signSteps.length]);
 
   useEffect(() => {
     if (isReloading) {
