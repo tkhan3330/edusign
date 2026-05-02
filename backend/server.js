@@ -272,16 +272,29 @@ const SUPPORTED_MIMES = [
 const MIME_QUERY = SUPPORTED_MIMES.map(t => `mimeType = '${t}'`).join(" or ");
 
 async function getFolderAndSubfolders(drive, parentId) {
-  try {
-    const { data } = await drive.files.list({
-      q: `'${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-      fields: "files(id)",
-    });
-    const subIds = (data.files || []).map(f => f.id);
-    return [parentId, ...subIds];
-  } catch (err) {
-    return [parentId];
+  const allIds = [parentId];
+  async function findRecursive(pid) {
+    let pageToken = null;
+    try {
+      do {
+        const { data } = await drive.files.list({
+          q: `'${pid}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+          fields: "nextPageToken, files(id)",
+          pageToken: pageToken || undefined
+        });
+        const folders = data.files || [];
+        for (const f of folders) {
+          allIds.push(f.id);
+          await findRecursive(f.id);
+        }
+        pageToken = data.nextPageToken;
+      } while (pageToken);
+    } catch (err) {
+      console.error(`Error fetching subfolders for ${pid}:`, err.message);
+    }
   }
+  await findRecursive(parentId);
+  return allIds;
 }
 
 // ═══════════════════════════════════════════════════════════
