@@ -268,6 +268,7 @@ const SUPPORTED_MIMES = [
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/msword",
+  "application/vnd.google-apps.document",
 ];
 const MIME_QUERY = SUPPORTED_MIMES.map(t => `mimeType = '${t}'`).join(" or ");
 
@@ -296,6 +297,27 @@ async function getFolderAndSubfolders(drive, parentId) {
   await findRecursive(parentId);
   return allIds;
 }
+
+async function listAllFiles(drive, query, fields) {
+  let allFiles = [];
+  let pageToken = null;
+  try {
+    do {
+      const { data } = await drive.files.list({
+        q: query,
+        fields: `nextPageToken, ${fields}`,
+        pageSize: 1000,
+        pageToken: pageToken || undefined,
+      });
+      allFiles = allFiles.concat(data.files || []);
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+  } catch (err) {
+    console.error("Error listing files:", err.message);
+  }
+  return allFiles;
+}
+
 
 // ═══════════════════════════════════════════════════════════
 //  Routes — Setup & Auth (open, no auth required)
@@ -441,11 +463,7 @@ app.get("/api/folders", async (_req, res) => {
         try {
           const searchIds = await getFolderAndSubfolders(drive, folder.id);
           const parentQuery = searchIds.map(id => `'${id}' in parents`).join(" or ");
-          const { data: fd } = await drive.files.list({
-            q: `(${parentQuery}) and (${MIME_QUERY}) and trashed = false`,
-            fields: "files(id, properties)",
-          });
-          const files = fd.files || [];
+          const files = await listAllFiles(drive, `(${parentQuery}) and (${MIME_QUERY}) and trashed = false`, "files(id, properties)");
           const signedCount = files.filter(f => f.properties?.edusign_signed === "true").length;
           return { ...folder, totalFiles: files.length, signedFiles: signedCount };
         } catch {
@@ -463,11 +481,8 @@ app.get("/api/folders/:folderId/files", async (req, res) => {
     const drive = getDrive();
     const searchIds = await getFolderAndSubfolders(drive, req.params.folderId);
     const parentQuery = searchIds.map(id => `'${id}' in parents`).join(" or ");
-    const { data } = await drive.files.list({
-      q: `(${parentQuery}) and (${MIME_QUERY}) and trashed = false`,
-      fields: "files(id, name, mimeType, properties, size)", orderBy: "name",
-    });
-    const files = data.files.map(f => ({
+    const driveFiles = await listAllFiles(drive, `(${parentQuery}) and (${MIME_QUERY}) and trashed = false`, "files(id, name, mimeType, properties, size)");
+    const files = driveFiles.map(f => ({
       id: f.id, name: f.name, mimeType: f.mimeType || "application/pdf",
       isSigned: f.properties?.edusign_signed === "true",
       signedBy: f.properties?.edusign_signed_by || null,
@@ -481,10 +496,25 @@ app.get("/api/files/:fileId/preview", async (req, res) => {
   try {
     const drive = getDrive();
     const { fileId } = req.params;
-    const fileRes = await drive.files.get({ fileId, alt: "media" }, { responseType: "stream" });
+    const { data: meta } = await drive.files.get({ fileId, fields: "mimeType, name" });
+
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", "inline; filename=\"lesson-plan.pdf\"");
-    fileRes.data.pipe(res);
+    res.setHeader("Content-Disposition", `inline; filename="${meta.name.split('.')[0]}.pdf"`);
+
+    if (meta.mimeType === "application/vnd.google-apps.document") {
+      const exportRes = await drive.files.export({ fileId, mimeType: "application/pdf" }, { responseType: "stream" });
+      exportRes.data.pipe(res);
+    } else if (meta.mimeType === "application/pdf") {
+      const fileRes = await drive.files.get({ fileId, alt: "media" }, { responseType: "stream" });
+      fileRes.data.pipe(res);
+    } else {
+      // For Word docs, we need to convert them locally if we want a preview, 
+      // but since the frontend expects a PDF stream, let's convert it.
+      const wordRes = await drive.files.get({ fileId, alt: "media" }, { responseType: "arraybuffer" });
+      const pdfBuffer = await convertWordToPdf(Buffer.from(wordRes.data));
+      const s = new Readable(); s.push(pdfBuffer); s.push(null);
+      s.pipe(res);
+    }
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -497,18 +527,21 @@ app.post("/api/files/:fileId/sign", async (req, res) => {
 
     const { data: fileMeta } = await drive.files.get({ fileId, fields: "mimeType, name, parents" });
     const isPdf = fileMeta.mimeType === "application/pdf";
+    const isGoogleDoc = fileMeta.mimeType === "application/vnd.google-apps.document";
     let pdfBuffer;
 
     if (isPdf) {
       const fileRes = await drive.files.get({ fileId, alt: "media" }, { responseType: "arraybuffer" });
       pdfBuffer = Buffer.from(fileRes.data);
+    } else if (isGoogleDoc) {
+      console.log(`📄 Exporting Google Doc "${fileMeta.name}" to PDF...`);
+      const exportRes = await drive.files.export({ fileId, mimeType: "application/pdf" }, { responseType: "arraybuffer" });
+      pdfBuffer = Buffer.from(exportRes.data);
     } else {
-      console.log(`📄 Converting "${fileMeta.name}" locally to PDF...`);
+      console.log(`📄 Converting Word file "${fileMeta.name}" locally to PDF...`);
       const wordRes = await drive.files.get({ fileId, alt: "media" }, { responseType: "arraybuffer" });
       const wordBuffer = Buffer.from(wordRes.data);
-      console.log(`   Downloaded Word file: ${wordBuffer.length} bytes`);
       pdfBuffer = await convertWordToPdf(wordBuffer);
-      console.log(`   Converted to PDF: ${pdfBuffer.length} bytes`);
     }
 
     const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
@@ -551,7 +584,6 @@ app.post("/api/files/:fileId/sign", async (req, res) => {
 
     const signedPdfBytes = await pdfDoc.save();
     const s = new Readable(); s.push(Buffer.from(signedPdfBytes)); s.push(null);
-    await drive.files.update({ fileId, media: { mimeType: "application/pdf", body: s } });
 
     const updateBody = {
       properties: {
@@ -560,11 +592,34 @@ app.post("/api/files/:fileId/sign", async (req, res) => {
         edusign_signed_at: new Date().toISOString(),
       },
     };
-    if (!isPdf && fileMeta.name) {
-      updateBody.name = fileMeta.name.replace(/\.(docx?|doc)$/i, ".pdf");
+
+    if (isGoogleDoc) {
+      // Google Docs cannot be updated in-place with PDF bytes. Create a new PDF file.
+      const newFileMeta = {
+        name: fileMeta.name.replace(/\.[^/.]+$/, "") + ".pdf",
+        parents: fileMeta.parents,
+        ...updateBody
+      };
+      const createdFile = await drive.files.create({
+        requestBody: newFileMeta,
+        media: { mimeType: "application/pdf", body: s },
+        fields: "id"
+      });
+      // Trash the original Google Doc
+      try { await drive.files.update({ fileId, requestBody: { trashed: true } }); } catch (e) { console.error("Failed to trash original doc:", e.message); }
+      // Update fileId for the permission grant
+      const newFileId = createdFile.data.id;
+      await drive.permissions.create({ fileId: newFileId, requestBody: { role: 'reader', type: 'anyone' } });
+    } else {
+      // PDF and Word files can be updated in-place
+      await drive.files.update({ fileId, media: { mimeType: "application/pdf", body: s } });
+      if (!isPdf && fileMeta.name) {
+        updateBody.name = fileMeta.name.replace(/\.(docx?|doc)$/i, ".pdf");
+      }
+      await drive.files.update({ fileId, requestBody: updateBody });
+      await drive.permissions.create({ fileId, requestBody: { role: 'reader', type: 'anyone' } });
     }
-    await drive.files.update({ fileId, requestBody: updateBody });
-    await drive.permissions.create({ fileId, requestBody: { role: 'reader', type: 'anyone' } });
+
     res.json({ success: true });
   } catch (err) {
     console.error("❌ Sign error:", err.message, err.stack?.split("\n").slice(0, 3).join("\n"));
