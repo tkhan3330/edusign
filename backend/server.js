@@ -13,6 +13,11 @@ const JSZip = require("jszip");
 const { isConfigured, getFolderSources, hasGoogleCredentials, getPublicConfig, addFolderSource, removeFolderSource, setPassword, verifyPassword, readConfig } = require("./config");
 const { requireAuth, loginHandler, checkHandler, logoutHandler } = require("./auth");
 const setupRouter = require("./setup");
+const { isPasswordConfigured } = require("./config");
+
+// ── In-memory cache for production robustness ──
+const FOLDER_CACHE = new Map();
+const CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 
 // ── Extract cell colors from raw .docx XML ──
 async function extractDocxStyles(wordBuffer) {
@@ -318,6 +323,21 @@ async function listAllFiles(drive, query, fields) {
   return allFiles;
 }
 
+// ── Concurrency helper to avoid hitting Google API limits ──
+async function limitConcurrency(items, limit, fn) {
+  const results = [];
+  const batches = [];
+  for (let i = 0; i < items.length; i += limit) {
+    batches.push(items.slice(i, i + limit));
+  }
+  for (const batch of batches) {
+    const batchResults = await Promise.all(batch.map(fn));
+    results.push(...batchResults);
+  }
+  return results;
+}
+
+
 
 // ═══════════════════════════════════════════════════════════
 //  Routes — Setup & Auth (open, no auth required)
@@ -430,10 +450,11 @@ app.put("/api/admin/org", (req, res) => {
 // ═══════════════════════════════════════════════════════════
 //  Routes — Core App (folders, files, preview, sign)
 // ═══════════════════════════════════════════════════════════
-app.get("/api/folders", async (_req, res) => {
+app.get("/api/folders", async (req, res) => {
   try {
     const drive = getDrive();
     const sources = getFolderSources();
+    const { refresh } = req.query;
 
     if (!sources.length) {
       return res.json({ folders: [], sources: [] });
@@ -457,20 +478,27 @@ app.get("/api/folders", async (_req, res) => {
 
     const allFolders = sourceResults.flat();
 
-    // Enrich with file counts in parallel
-    const enriched = await Promise.all(
-      allFolders.map(async (folder) => {
-        try {
-          const searchIds = await getFolderAndSubfolders(drive, folder.id);
-          const parentQuery = searchIds.map(id => `'${id}' in parents`).join(" or ");
-          const files = await listAllFiles(drive, `(${parentQuery}) and (${MIME_QUERY}) and trashed = false`, "files(id, properties)");
-          const signedCount = files.filter(f => f.properties?.edusign_signed === "true").length;
-          return { ...folder, totalFiles: files.length, signedFiles: signedCount };
-        } catch {
-          return { ...folder, totalFiles: 0, signedFiles: 0 };
-        }
-      })
-    );
+    // Enrich with file counts with concurrency control and caching
+    const enriched = await limitConcurrency(allFolders, 5, async (folder) => {
+      const cached = FOLDER_CACHE.get(folder.id);
+      if (!refresh && cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+        return { ...folder, ...cached.data };
+      }
+
+      try {
+        const searchIds = await getFolderAndSubfolders(drive, folder.id);
+        const parentQuery = searchIds.map(id => `'${id}' in parents`).join(" or ");
+        const files = await listAllFiles(drive, `(${parentQuery}) and (${MIME_QUERY}) and trashed = false`, "files(id, properties)");
+        const signedCount = files.filter(f => f.properties?.edusign_signed === "true").length;
+
+        const result = { totalFiles: files.length, signedFiles: signedCount };
+        FOLDER_CACHE.set(folder.id, { timestamp: Date.now(), data: result });
+        return { ...folder, ...result };
+      } catch (err) {
+        console.error(`Error enriching folder ${folder.name}:`, err.message);
+        return { ...folder, totalFiles: 0, signedFiles: 0 };
+      }
+    });
 
     res.json({ folders: enriched, sources });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -618,6 +646,11 @@ app.post("/api/files/:fileId/sign", async (req, res) => {
       }
       await drive.files.update({ fileId, requestBody: updateBody });
       await drive.permissions.create({ fileId, requestBody: { role: 'reader', type: 'anyone' } });
+    }
+
+    // Invalidate cache for parent folders
+    if (fileMeta.parents) {
+      fileMeta.parents.forEach(p => FOLDER_CACHE.delete(p));
     }
 
     res.json({ success: true });
